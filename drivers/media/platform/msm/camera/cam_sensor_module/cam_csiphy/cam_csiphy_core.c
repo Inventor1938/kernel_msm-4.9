@@ -100,21 +100,6 @@ void cam_csiphy_reset(struct csiphy_device *csiphy_dev)
 			csiphy_dev->ctrl_reg->
 			csiphy_reset_reg[i].delay * 1000 + 10);
 	}
-}
-
-static int32_t cam_csiphy_update_secure_info(
-	struct csiphy_device *csiphy_dev,
-	struct cam_csiphy_info  *cam_cmd_csiphy_info,
-	struct cam_config_dev_cmd *cfg_dev)
-{
-	uint32_t clock_lane, adj_lane_mask, temp;
-	int32_t offset;
-
-	if (csiphy_dev->acquire_count >=
-		CSIPHY_MAX_INSTANCES) {
-		CAM_ERR(CAM_CSIPHY, "Invalid acquire count");
-		return -EINVAL;
-	}
 
 	offset = cam_csiphy_get_instance_offset(csiphy_dev,
 		cfg_dev->dev_handle);
@@ -254,7 +239,7 @@ irqreturn_t cam_csiphy_irq(int irq_num, void *data)
 
 	if (!csiphy_dev) {
 		CAM_ERR(CAM_CSIPHY, "Invalid Args");
-		return IRQ_NONE;
+		return -EINVAL;
 	}
 
 	soc_info = &csiphy_dev->soc_info;
@@ -386,14 +371,12 @@ int32_t cam_csiphy_config_dev(struct csiphy_device *csiphy_dev)
 			continue;
 		}
 
-		settle_cnt = div64_u64(csiphy_dev->csiphy_info.settle_time,
-			200000000);
+		settle_cnt = (csiphy_dev->csiphy_info.settle_time / 200000000);
 		if (csiphy_dev->csiphy_info.combo_mode == 1 &&
 			(lane_pos >= 3))
 			settle_cnt =
-				div64_u64(csiphy_dev->csiphy_info.
-					settle_time_combo_sensor,
-					200000000);
+				(csiphy_dev->csiphy_info.
+				settle_time_combo_sensor / 200000000);
 		for (i = 0; i < cfg_size; i++) {
 			switch (reg_array[lane_pos][i].csiphy_param_type) {
 			case CSIPHY_LANE_ENABLE:

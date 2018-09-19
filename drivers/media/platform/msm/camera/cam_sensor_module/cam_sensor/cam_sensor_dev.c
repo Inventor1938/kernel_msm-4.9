@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -233,8 +233,9 @@ static int32_t cam_sensor_driver_i2c_probe(struct i2c_client *client,
 
 	s_ctrl->i2c_data.per_frame =
 		(struct i2c_settings_array *)
-		kzalloc(sizeof(struct i2c_settings_array) *
-		MAX_PER_FRAME_ARRAY, GFP_KERNEL);
+		kcalloc(MAX_PER_FRAME_ARRAY,
+			sizeof(struct i2c_settings_array),
+			GFP_KERNEL);
 	if (s_ctrl->i2c_data.per_frame == NULL) {
 		rc = -ENOMEM;
 		goto unreg_subdev;
@@ -354,8 +355,9 @@ static int32_t cam_sensor_driver_platform_probe(
 
 	s_ctrl->i2c_data.per_frame =
 		(struct i2c_settings_array *)
-		kzalloc(sizeof(struct i2c_settings_array) *
-		MAX_PER_FRAME_ARRAY, GFP_KERNEL);
+		kcalloc(MAX_PER_FRAME_ARRAY,
+			sizeof(struct i2c_settings_array),
+			GFP_KERNEL);
 	if (s_ctrl->i2c_data.per_frame == NULL) {
 		rc = -ENOMEM;
 		goto unreg_subdev;
@@ -397,7 +399,6 @@ static struct platform_driver cam_sensor_platform_driver = {
 		.name = "qcom,camera",
 		.owner = THIS_MODULE,
 		.of_match_table = cam_sensor_driver_dt_match,
-		.suppress_bind_attrs = true,
 	},
 	.remove = cam_sensor_platform_remove,
 };

@@ -280,10 +280,7 @@ destroy_dev_hdl:
 		CAM_ERR(CAM_CORE, "destroy device hdl failed for node %s",
 			node->name);
 
-	CAM_DBG(CAM_CORE, "[%s] Release ctx_id=%d, refcount=%d",
-		node->name, ctx->ctx_id,
-		atomic_read(&(ctx->refcount.refcount)));
-
+	cam_context_putref(ctx);
 	return rc;
 }
 
@@ -397,19 +394,14 @@ int cam_node_deinit(struct cam_node *node)
 int cam_node_shutdown(struct cam_node *node)
 {
 	int i = 0;
-	int rc = 0;
 
 	if (!node)
 		return -EINVAL;
 
 	for (i = 0; i < node->ctx_size; i++) {
-		if (node->ctx_list[i].dev_hdl > 0) {
-			CAM_DBG(CAM_CORE,
-				"Node [%s] invoking shutdown on context [%d]",
-				node->name, i);
-			rc = cam_context_shutdown(&(node->ctx_list[i]));
-			if (rc)
-				continue;
+		if (node->ctx_list[i].dev_hdl >= 0) {
+			cam_context_shutdown(&(node->ctx_list[i]));
+			cam_destroy_device_hdl(node->ctx_list[i].dev_hdl);
 			cam_context_putref(&(node->ctx_list[i]));
 		}
 	}
