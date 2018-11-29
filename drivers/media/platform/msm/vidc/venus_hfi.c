@@ -1175,7 +1175,7 @@ static int __iface_cmdq_write_relaxed(struct venus_hfi_device *device,
 	__strict_check(device);
 
 	if (!__core_in_valid_state(device)) {
-		dprintk(VIDC_DBG, "%s - fw not in init state\n", __func__);
+		dprintk(VIDC_ERR, "%s - fw not in init state\n", __func__);
 		result = -EINVAL;
 		goto err_q_null;
 	}
@@ -2747,8 +2747,6 @@ static void venus_hfi_pm_handler(struct work_struct *work)
 {
 	int rc = 0;
 	u32 wfi_status = 0, idle_status = 0, pc_ready = 0;
-	//int count = 0;
-	//guoguangyi,2018/8/20,qcom's patch
 	int pc_count = 0, idle_count = 0;
 	const int max_tries = 10;
 	struct venus_hfi_device *device = list_first_entry(
@@ -2798,8 +2796,6 @@ static void venus_hfi_pm_handler(struct work_struct *work)
 				wfi_status);
 			goto skip_power_off;
 		}
-		//int count = 0;
-		//guoguangyi,2018/8/20,qcom's patch
 		while (device->res->sys_idle_indicator &&
 				idle_count < max_tries) {
 			if (idle_status & BIT(30))
@@ -2810,8 +2806,6 @@ static void venus_hfi_pm_handler(struct work_struct *work)
 			idle_count++;
 		}
 		if (idle_count == max_tries) {
-		//if (device->res->sys_idle_indicator &&
-		//	!(idle_status & BIT(30))) {
 			dprintk(VIDC_WARN,
 				"Skipping PC as idle_status (%#x) bit not set\n",
 				idle_status);
@@ -2823,9 +2817,8 @@ static void venus_hfi_pm_handler(struct work_struct *work)
 			dprintk(VIDC_WARN, "Failed PC %d\n", rc);
 			goto skip_power_off;
 		}
-		//guoguangyi,2018/8/20,qcom's patch
+
 		while (pc_count < max_tries) {
-		//while (count < max_tries) {
 			wfi_status = __read_register(device,
 					VIDC_WRAPPER_CPU_STATUS);
 			pc_ready = __read_register(device,
@@ -2834,13 +2827,9 @@ static void venus_hfi_pm_handler(struct work_struct *work)
 				VIDC_CPU_CS_SCIACMDARG0_HFI_CTRL_PC_READY))
 				break;
 			usleep_range(150, 250);
-			//guoguangyi,2018/8/20,qcom's patch
-			//count++;
 			pc_count++;
 		}
 
-		//guoguangyi,2018/8/20,qcom's patch
-		//if (count == max_tries) {
 		if (pc_count == max_tries) {
 			dprintk(VIDC_ERR,
 					"Skip PC. Core is not in right state (%#x, %#x)\n",
@@ -2914,8 +2903,6 @@ static int __halt_axi(struct venus_hfi_device *device)
 static void __process_sys_error(struct venus_hfi_device *device)
 {
 	struct hfi_sfr_struct *vsfr = NULL;
-
-	__set_state(device, VENUS_STATE_DEINIT);
 
 	if (__halt_axi(device))
 		dprintk(VIDC_WARN, "Failed to halt AXI after SYS_ERROR\n");
@@ -3174,6 +3161,10 @@ static int __response_handler(struct venus_hfi_device *device)
 					"Too many packets in message queue to handle at once, deferring read\n");
 			break;
 		}
+
+		/* do not read packets after sys error packet */
+		if (info->response_type == HAL_SYS_ERROR)
+			break;
 	}
 
 	if (requeue_pm_work && device->res->sw_power_collapsible) {
@@ -3238,6 +3229,12 @@ err_no_work:
 		struct msm_vidc_cb_info *r = &device->response_pkt[i];
 		dprintk(VIDC_DBG, "Processing response %d of %d, type %d\n",
 			(i + 1), num_responses, r->response_type);
+		if (!__core_in_valid_state(device)) {
+			dprintk(VIDC_ERR,
+				"Ignore responses from %d to %d as device is in invalid state",
+				(i + 1), num_responses);
+			break;
+		}
 		device->callback(r->response_type, &r->response);
 	}
 

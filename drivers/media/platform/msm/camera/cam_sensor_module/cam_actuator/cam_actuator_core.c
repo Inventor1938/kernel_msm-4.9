@@ -53,6 +53,8 @@ int32_t cam_actuator_construct_default_power_setting(
 
 free_power_settings:
 	kfree(power_info->power_setting);
+	power_info->power_setting = NULL;
+	power_info->power_setting_size = 0;
 	return rc;
 }
 
@@ -139,7 +141,7 @@ static int32_t cam_actuator_power_down(struct cam_actuator_ctrl_t *a_ctrl)
 		CAM_ERR(CAM_ACTUATOR, "failed: power_info %pK", power_info);
 		return -EINVAL;
 	}
-	rc = msm_camera_power_down(power_info, soc_info);
+	rc = cam_sensor_util_power_down(power_info, soc_info);
 	if (rc) {
 		CAM_ERR(CAM_ACTUATOR, "power down the core is failed:%d", rc);
 		return rc;
@@ -272,7 +274,10 @@ int32_t cam_actuator_apply_settings(struct cam_actuator_ctrl_t *a_ctrl,
 			CAM_ERR(CAM_ACTUATOR,
 				"Failed to apply settings: %d",
 				rc);
-			return rc;
+		} else {
+			CAM_DBG(CAM_ACTUATOR,
+				"Success:request ID: %d",
+				i2c_set->request_id);
 		}
 	}
 
@@ -300,7 +305,7 @@ int32_t cam_actuator_apply_request(struct cam_req_mgr_apply_request *apply)
 	trace_cam_apply_req("Actuator", apply->request_id);
 
 	CAM_DBG(CAM_ACTUATOR, "Request Id: %lld", apply->request_id);
-
+	mutex_lock(&(a_ctrl->actuator_mutex));
 	if ((apply->request_id ==
 		a_ctrl->i2c_data.per_frame[request_id].request_id) &&
 		(a_ctrl->i2c_data.per_frame[request_id].is_settings_valid)
@@ -311,7 +316,7 @@ int32_t cam_actuator_apply_request(struct cam_req_mgr_apply_request *apply)
 			CAM_ERR(CAM_ACTUATOR,
 				"Failed in applying the request: %lld\n",
 				apply->request_id);
-			return rc;
+			goto release_mutex;
 		}
 	}
 	del_req_id = (request_id +
@@ -326,12 +331,14 @@ int32_t cam_actuator_apply_request(struct cam_req_mgr_apply_request *apply)
 			CAM_ERR(CAM_ACTUATOR,
 				"Fail deleting the req: %d err: %d\n",
 				del_req_id, rc);
-			return rc;
+			goto release_mutex;
 		}
 	} else {
 		CAM_DBG(CAM_ACTUATOR, "No Valid Req to clean Up");
 	}
 
+release_mutex:
+	mutex_unlock(&(a_ctrl->actuator_mutex));
 	return rc;
 }
 
@@ -351,6 +358,8 @@ int32_t cam_actuator_establish_link(
 		CAM_ERR(CAM_ACTUATOR, "Device data is NULL");
 		return -EINVAL;
 	}
+
+	mutex_lock(&(a_ctrl->actuator_mutex));
 	if (link->link_enable) {
 		a_ctrl->bridge_intf.link_hdl = link->link_hdl;
 		a_ctrl->bridge_intf.crm_cb = link->crm_cb;
@@ -358,8 +367,31 @@ int32_t cam_actuator_establish_link(
 		a_ctrl->bridge_intf.link_hdl = -1;
 		a_ctrl->bridge_intf.crm_cb = NULL;
 	}
+	mutex_unlock(&(a_ctrl->actuator_mutex));
 
 	return 0;
+}
+
+static void cam_actuator_update_req_mgr(
+	struct cam_actuator_ctrl_t *a_ctrl,
+	struct cam_packet *csl_packet)
+{
+	struct cam_req_mgr_add_request add_req;
+
+	add_req.link_hdl = a_ctrl->bridge_intf.link_hdl;
+	add_req.req_id = csl_packet->header.request_id;
+	add_req.dev_hdl = a_ctrl->bridge_intf.device_hdl;
+	add_req.skip_before_applying = 0;
+
+	if (a_ctrl->bridge_intf.crm_cb &&
+		a_ctrl->bridge_intf.crm_cb->add_req) {
+		a_ctrl->bridge_intf.crm_cb->add_req(&add_req);
+		CAM_DBG(CAM_ACTUATOR, "Request Id: %lld added to CRM",
+			add_req.req_id);
+	} else {
+		CAM_ERR(CAM_ACTUATOR, "Can't add Request ID: %lld to CRM",
+			csl_packet->header.request_id);
+	}
 }
 
 int32_t cam_actuator_publish_dev_info(struct cam_req_mgr_device_info *info)
@@ -371,7 +403,7 @@ int32_t cam_actuator_publish_dev_info(struct cam_req_mgr_device_info *info)
 
 	info->dev_id = CAM_REQ_MGR_DEVICE_ACTUATOR;
 	strlcpy(info->name, CAM_ACTUATOR_NAME, sizeof(info->name));
-	info->p_delay = 0;
+	info->p_delay = 1;
 	info->trigger = CAM_TRIGGER_POINT_SOF;
 
 	return 0;
@@ -394,7 +426,6 @@ int32_t cam_actuator_i2c_pkt_parse(struct cam_actuator_ctrl_t *a_ctrl,
 	struct i2c_data_settings  *i2c_data = NULL;
 	struct i2c_settings_array *i2c_reg_settings = NULL;
 	struct cam_cmd_buf_desc   *cmd_desc = NULL;
-	struct cam_req_mgr_add_request  add_req;
 	struct cam_actuator_soc_private *soc_private = NULL;
 	struct cam_sensor_power_ctrl_t  *power_info = NULL;
 
@@ -557,6 +588,7 @@ int32_t cam_actuator_i2c_pkt_parse(struct cam_actuator_ctrl_t *a_ctrl,
 				"Auto move lens parsing failed: %d", rc);
 			return rc;
 		}
+		cam_actuator_update_req_mgr(a_ctrl, csl_packet);
 		break;
 	case CAM_ACTUATOR_PACKET_MANUAL_MOVE_LENS:
 		if (a_ctrl->cam_act_state < CAM_ACTUATOR_CONFIG) {
@@ -566,11 +598,13 @@ int32_t cam_actuator_i2c_pkt_parse(struct cam_actuator_ctrl_t *a_ctrl,
 				a_ctrl->cam_act_state);
 			return rc;
 		}
+
+		a_ctrl->setting_apply_state = ACT_APPLY_SETTINGS_LATER;
 		i2c_data = &(a_ctrl->i2c_data);
 		i2c_reg_settings = &i2c_data->per_frame[
 			csl_packet->header.request_id % MAX_PER_FRAME_ARRAY];
 
-		i2c_data->init_settings.request_id =
+		 i2c_reg_settings->request_id =
 			csl_packet->header.request_id;
 		i2c_reg_settings->is_settings_valid = 1;
 		offset = (uint32_t *)&csl_packet->payload;
@@ -583,20 +617,19 @@ int32_t cam_actuator_i2c_pkt_parse(struct cam_actuator_ctrl_t *a_ctrl,
 				"Manual move lens parsing failed: %d", rc);
 			return rc;
 		}
-		break;
-	}
 
-	if ((csl_packet->header.op_code & 0xFFFFFF) !=
-		CAM_ACTUATOR_PACKET_OPCODE_INIT) {
-		add_req.link_hdl = a_ctrl->bridge_intf.link_hdl;
-		add_req.req_id = csl_packet->header.request_id;
-		add_req.dev_hdl = a_ctrl->bridge_intf.device_hdl;
-		add_req.skip_before_applying = 0;
-		if (a_ctrl->bridge_intf.crm_cb &&
-			a_ctrl->bridge_intf.crm_cb->add_req)
-			a_ctrl->bridge_intf.crm_cb->add_req(&add_req);
-		CAM_DBG(CAM_ACTUATOR, "Req Id: %lld added to Bridge",
-			add_req.req_id);
+		cam_actuator_update_req_mgr(a_ctrl, csl_packet);
+		break;
+	case CAM_PKT_NOP_OPCODE:
+		if (a_ctrl->cam_act_state < CAM_ACTUATOR_CONFIG) {
+			CAM_WARN(CAM_ACTUATOR,
+				"Received NOP packets in invalid state: %d",
+				a_ctrl->cam_act_state);
+			return -EINVAL;
+		}
+
+		cam_actuator_update_req_mgr(a_ctrl, csl_packet);
+		break;
 	}
 
 	return rc;
@@ -623,6 +656,14 @@ void cam_actuator_shutdown(struct cam_actuator_ctrl_t *a_ctrl)
 		a_ctrl->bridge_intf.link_hdl = -1;
 		a_ctrl->bridge_intf.session_hdl = -1;
 	}
+
+	kfree(power_info->power_setting);
+	kfree(power_info->power_down_setting);
+	power_info->power_setting = NULL;
+	power_info->power_down_setting = NULL;
+	power_info->power_setting_size = 0;
+	power_info->power_down_setting_size = 0;
+
 	a_ctrl->cam_act_state = CAM_ACTUATOR_INIT;
 }
 
@@ -631,11 +672,18 @@ int32_t cam_actuator_driver_cmd(struct cam_actuator_ctrl_t *a_ctrl,
 {
 	int rc = 0;
 	struct cam_control *cmd = (struct cam_control *)arg;
+	struct cam_actuator_soc_private *soc_private = NULL;
+	struct cam_sensor_power_ctrl_t  *power_info = NULL;
 
 	if (!a_ctrl || !cmd) {
-		CAM_ERR(CAM_ACTUATOR, " Invalid Args");
+		CAM_ERR(CAM_ACTUATOR, "Invalid Args");
 		return -EINVAL;
 	}
+
+	soc_private =
+		(struct cam_actuator_soc_private *)a_ctrl->soc_info.soc_private;
+
+	power_info = &soc_private->power_info;
 
 	if (cmd->handle_type != CAM_HANDLE_USER_POINTER) {
 		CAM_ERR(CAM_ACTUATOR, "Invalid handle type: %d",
@@ -720,6 +768,12 @@ int32_t cam_actuator_driver_cmd(struct cam_actuator_ctrl_t *a_ctrl,
 		a_ctrl->bridge_intf.link_hdl = -1;
 		a_ctrl->bridge_intf.session_hdl = -1;
 		a_ctrl->cam_act_state = CAM_ACTUATOR_INIT;
+		kfree(power_info->power_setting);
+		kfree(power_info->power_down_setting);
+		power_info->power_setting = NULL;
+		power_info->power_down_setting = NULL;
+		power_info->power_down_setting_size = 0;
+		power_info->power_setting_size = 0;
 	}
 		break;
 	case CAM_QUERY_CAP: {
@@ -826,7 +880,6 @@ int32_t cam_actuator_flush_request(struct cam_req_mgr_flush_request *flush_req)
 		return -EINVAL;
 	}
 
-	/* PATCH, add by xcb */
 	if (a_ctrl->i2c_data.per_frame == NULL) {
 		CAM_ERR(CAM_ACTUATOR, "i2c frame data is NULL");
 		return -EINVAL;
@@ -840,7 +893,9 @@ int32_t cam_actuator_flush_request(struct cam_req_mgr_flush_request *flush_req)
 			continue;
 
 		if (i2c_set->is_settings_valid == 1) {
+			mutex_lock(&(a_ctrl->actuator_mutex));
 			rc = delete_request(i2c_set);
+			mutex_unlock(&(a_ctrl->actuator_mutex));
 			if (rc < 0)
 				CAM_ERR(CAM_ACTUATOR,
 					"delete request: %lld rc: %d",
