@@ -56,8 +56,6 @@ int cam_context_shutdown(struct cam_context *ctx)
 	}
 	mutex_unlock(&ctx->ctx_mutex);
 
-	if (!rc)
-		rc = cam_destroy_device_hdl(ctx_hdl);
 	return rc;
 }
 
