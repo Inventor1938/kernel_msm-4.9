@@ -50,7 +50,6 @@
 #include "cam_soc_util.h"
 #include "cam_trace.h"
 #include "cam_cpas_api.h"
-#include "cam_common_util.h"
 
 #define ICP_WORKQ_TASK_CMD_TYPE 1
 #define ICP_WORKQ_TASK_MSG_TYPE 2
@@ -1433,10 +1432,6 @@ static int cam_icp_mgr_handle_frame_process(uint32_t *msg_ptr, int flag)
 		dev_type);
 	cam_icp_device_timer_reset(&icp_hw_mgr, clk_type);
 
-	clk_type = ICP_DEV_TYPE_TO_CLK_TYPE(ctx_data->icp_dev_acquire_info->
-		dev_type);
-	cam_icp_device_timer_reset(&icp_hw_mgr, clk_type);
-
 	mutex_lock(&ctx_data->ctx_mutex);
 	cam_icp_ctx_timer_reset(ctx_data);
 	if (ctx_data->state != CAM_ICP_CTX_STATE_ACQUIRED) {
@@ -1846,11 +1841,6 @@ int32_t cam_icp_hw_mgr_cb(uint32_t irq_status, void *data)
 	struct cam_icp_hw_mgr *hw_mgr = data;
 	struct crm_workq_task *task;
 	struct hfi_msg_work_data *task_data;
-
-	if (!data) {
-		CAM_ERR(CAM_ICP, "irq cb data is NULL");
-		return rc;
-	}
 
 	spin_lock_irqsave(&hw_mgr->hw_mgr_lock, flags);
 	task = cam_req_mgr_workq_get_task(icp_hw_mgr.msg_work);
@@ -3125,11 +3115,6 @@ static int cam_icp_mgr_process_io_cfg(struct cam_icp_hw_mgr *hw_mgr,
 			i, io_cfg_ptr[i].direction, io_cfg_ptr[i].fence);
 	}
 
-	if (prepare_args->num_in_map_entries > 1)
-		prepare_args->num_in_map_entries =
-			cam_common_util_remove_duplicate_arr(
-			sync_in_obj, prepare_args->num_in_map_entries);
-
 	if (prepare_args->num_in_map_entries > 1) {
 		rc = cam_sync_merge(&sync_in_obj[0],
 			prepare_args->num_in_map_entries, &merged_sync_in_obj);
@@ -3600,53 +3585,6 @@ static int cam_icp_mgr_release_hw(void *hw_mgr_priv, void *release_hw_args)
 		cam_icp_device_timer_stop(hw_mgr);
 
 	CAM_DBG(CAM_ICP, "Exit");
-	return rc;
-}
-
-static int cam_icp_mgr_send_config_io(struct cam_icp_hw_ctx_data *ctx_data,
-	uint32_t io_buf_addr)
-{
-	int rc = 0;
-	struct hfi_cmd_work_data *task_data;
-	struct hfi_cmd_ipebps_async ioconfig_cmd;
-	unsigned long rem_jiffies;
-	int timeout = 5000;
-	struct crm_workq_task *task;
-
-	task = cam_req_mgr_workq_get_task(icp_hw_mgr.cmd_work);
-	if (!task)
-		return -ENOMEM;
-
-	ioconfig_cmd.size = sizeof(struct hfi_cmd_ipebps_async);
-	ioconfig_cmd.pkt_type = HFI_CMD_IPEBPS_ASYNC_COMMAND_INDIRECT;
-	if (ctx_data->icp_dev_acquire_info->dev_type == CAM_ICP_RES_TYPE_BPS)
-		ioconfig_cmd.opcode = HFI_IPEBPS_CMD_OPCODE_BPS_CONFIG_IO;
-	else
-		ioconfig_cmd.opcode = HFI_IPEBPS_CMD_OPCODE_IPE_CONFIG_IO;
-
-	reinit_completion(&ctx_data->wait_complete);
-	ioconfig_cmd.num_fw_handles = 1;
-	ioconfig_cmd.fw_handles[0] = ctx_data->fw_handle;
-	ioconfig_cmd.payload.indirect = io_buf_addr;
-	ioconfig_cmd.user_data1 = (uint64_t)ctx_data;
-	ioconfig_cmd.user_data2 = (uint64_t)0x0;
-	task_data = (struct hfi_cmd_work_data *)task->payload;
-	task_data->data = (void *)&ioconfig_cmd;
-	task_data->request_id = 0;
-	task_data->type = ICP_WORKQ_TASK_CMD_TYPE;
-	task->process_cb = cam_icp_mgr_process_cmd;
-	rc = cam_req_mgr_workq_enqueue_task(task, &icp_hw_mgr,
-		CRM_TASK_PRIORITY_0);
-	if (rc)
-		return rc;
-
-	rem_jiffies = wait_for_completion_timeout(&ctx_data->wait_complete,
-			msecs_to_jiffies((timeout)));
-	if (!rem_jiffies) {
-		rc = -ETIMEDOUT;
-		CAM_ERR(CAM_ICP, "FW response timed out %d", rc);
-	}
-
 	return rc;
 }
 
@@ -4272,35 +4210,7 @@ cmd_work_failed:
 	return rc;
 }
 
-static int cam_icp_mgr_cmd(void *hw_mgr_priv, void *cmd_args)
-{
-	int rc = 0;
-	struct cam_hw_cmd_args *hw_cmd_args = cmd_args;
-	struct cam_icp_hw_mgr  *hw_mgr = hw_mgr_priv;
-
-	if (!hw_mgr_priv || !cmd_args) {
-		CAM_ERR(CAM_ICP, "Invalid arguments");
-		return -EINVAL;
-	}
-
-	switch (hw_cmd_args->cmd_type) {
-	case CAM_HW_MGR_CMD_DUMP_PF_INFO:
-		cam_icp_mgr_print_io_bufs(
-			hw_cmd_args->u.pf_args.pf_data.packet,
-			hw_mgr->iommu_hdl,
-			hw_mgr->iommu_sec_hdl,
-			hw_cmd_args->u.pf_args.buf_info,
-			hw_cmd_args->u.pf_args.mem_found);
-		break;
-	default:
-		CAM_ERR(CAM_ICP, "Invalid cmd");
-	}
-
-	return rc;
-}
-
-int cam_icp_hw_mgr_init(struct device_node *of_node, uint64_t *hw_mgr_hdl,
-	int *iommu_hdl)
+int cam_icp_hw_mgr_init(struct device_node *of_node, uint64_t *hw_mgr_hdl)
 {
 	int i, rc = 0;
 	struct cam_hw_mgr_intf *hw_mgr_intf;
@@ -4323,7 +4233,6 @@ int cam_icp_hw_mgr_init(struct device_node *of_node, uint64_t *hw_mgr_hdl,
 	hw_mgr_intf->hw_open = cam_icp_mgr_hw_open_u;
 	hw_mgr_intf->hw_close = cam_icp_mgr_hw_close_u;
 	hw_mgr_intf->hw_flush = cam_icp_mgr_hw_flush;
-	hw_mgr_intf->hw_cmd = cam_icp_mgr_cmd;
 
 	icp_hw_mgr.secure_mode = CAM_SECURE_MODE_NON_SECURE;
 	mutex_init(&icp_hw_mgr.hw_mgr_mutex);
@@ -4366,9 +4275,6 @@ int cam_icp_hw_mgr_init(struct device_node *of_node, uint64_t *hw_mgr_hdl,
 	rc = cam_icp_mgr_create_wq();
 	if (rc)
 		goto icp_wq_create_failed;
-
-	if (iommu_hdl)
-		*iommu_hdl = icp_hw_mgr.iommu_hdl;
 
 	init_completion(&icp_hw_mgr.a5_complete);
 	return rc;
