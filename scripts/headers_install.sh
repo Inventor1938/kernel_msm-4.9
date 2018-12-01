@@ -24,7 +24,6 @@ SRCDIR="$1"
 shift
 
 # Iterate through files listed on command line
-mkdir -p $OUTDIR
 
 FILE=
 trap 'rm -f "$OUTDIR/$FILE" "$OUTDIR/$FILE.sed"' EXIT
